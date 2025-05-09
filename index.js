@@ -9,6 +9,10 @@ const rateLimit = require('express-rate-limit');
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// IMPORTANT: Add this line to trust proxy headers - fixes X-Forwarded-For error
+app.set('trust proxy', true);
+
 app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -120,6 +124,7 @@ app.post('/api/publish', async (req, res) => {
         });
     }
 });
+
 app.use((err, req, res, next) => {
     console.error(err.stack);
     res.status(500).json({
