@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const { PubSub } = require('@google-cloud/pubsub');
+const { OAuth2Client } = require('google-auth-library');  // Add this for better OAuth handling
 const morgan = require('morgan');
 const dotenv = require('dotenv');
 const rateLimit = require('express-rate-limit');
@@ -10,7 +11,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// IMPORTANT: Add this line to trust proxy headers - fixes X-Forwarded-For error
+// Trust proxy for express-rate-limit to work correctly behind proxies
 app.set('trust proxy', true);
 
 app.use(helmet());
@@ -34,7 +35,14 @@ app.get('/health', (req, res) => {
 
 app.post('/api/publish', async (req, res) => {
     try {
-        const { topic, message, credentials, projectId } = req.body;
+        const { topic, message, credentials, projectId, scope } = req.body;
+        
+        // Log request details (excluding sensitive data)
+        console.log(`Publishing to topic: ${topic}, projectId: ${projectId || defaultProjectId}`);
+        console.log(`Credentials type: ${typeof credentials}`);
+        if (typeof credentials === 'string') {
+            console.log(`Credentials begins with: ${credentials.substring(0, 10)}...`);
+        }
 
         if (!topic) {
             return res.status(400).json({ error: 'Topic name is required' });
@@ -45,6 +53,7 @@ app.post('/api/publish', async (req, res) => {
         }
         
         let pubSubClient;
+        const pubSubScopes = ['https://www.googleapis.com/auth/pubsub'];
         
         if (credentials) {
             // Determine if credentials is a service account JSON or an OAuth token
@@ -52,25 +61,31 @@ app.post('/api/publish', async (req, res) => {
                 try {
                     // Try to parse as JSON first
                     const parsedCredentials = JSON.parse(credentials);
+                    console.log("Using parsed JSON credentials");
+                    
                     pubSubClient = new PubSub({
                         projectId: projectId || defaultProjectId,
                         credentials: parsedCredentials
                     });
                 } catch (parseError) {
                     // If parsing fails, treat it as an OAuth token
+                    console.log("Using OAuth token");
+                    
+                    // Create an OAuth2Client with the token
+                    const oAuth2Client = new OAuth2Client();
+                    oAuth2Client.setCredentials({
+                        access_token: credentials,
+                        scope: scope || pubSubScopes
+                    });
+                    
                     pubSubClient = new PubSub({
                         projectId: projectId || defaultProjectId,
-                        authClient: {
-                            getRequestHeaders: () => {
-                                return Promise.resolve({
-                                    'Authorization': `Bearer ${credentials}`
-                                });
-                            }
-                        }
+                        auth: oAuth2Client
                     });
                 }
             } else {
                 // Credentials is already an object
+                console.log("Using object credentials");
                 pubSubClient = new PubSub({
                     projectId: projectId || defaultProjectId,
                     credentials
@@ -78,14 +93,20 @@ app.post('/api/publish', async (req, res) => {
             }
         } else {
             // No credentials provided, use default authentication
+            console.log("Using default authentication");
             pubSubClient = new PubSub({
                 projectId: projectId || defaultProjectId
             });
         }
 
         const messageBuffer = Buffer.from(JSON.stringify(message));
-
         const topicObject = pubSubClient.topic(topic);
+        
+        // Add additional attributes for tracing
+        const messageAttributes = {
+            source: 'pubsub-proxy-api',
+            timestamp: new Date().toISOString()
+        };
 
         try {
             const [exists] = await topicObject.exists();
@@ -97,13 +118,14 @@ app.post('/api/publish', async (req, res) => {
                 return res.status(403).json({
                     error: 'Permission denied or authentication failure',
                     message: error.message,
-                    details: 'Check your service account credentials and permissions'
+                    details: 'Check your service account credentials and permissions',
+                    requiresScopes: pubSubScopes.join(', ')
                 });
             }
             throw error;
         }
 
-        const messageId = await topicObject.publish(messageBuffer);
+        const messageId = await topicObject.publish(messageBuffer, messageAttributes);
 
         return res.status(200).json({
             success: true,
@@ -114,7 +136,12 @@ app.post('/api/publish', async (req, res) => {
         console.error('Error publishing message:', error);
 
         if (error.code === 7) {
-            return res.status(403).json({ error: 'Permission denied. Check service account permissions.' });
+            return res.status(403).json({ 
+                error: 'Permission denied. Check service account permissions.',
+                message: error.message,
+                details: 'The provided credentials do not have the required permissions for this operation',
+                requiredPermission: 'pubsub.topics.publish'
+            });
         }
 
         return res.status(500).json({
