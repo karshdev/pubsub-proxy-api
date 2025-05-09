@@ -1,0 +1,26 @@
+{
+    "name": "pubsub-proxy-api",
+    "version": "1.0.0",
+    "description": "Proxy API for Google Cloud Pub/Sub",
+    "main": "index.js",
+    "scripts": {
+      "start": "node index.js",
+      "dev": "nodemon index.js",
+      "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "keywords": ["pubsub", "api", "google-cloud"],
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+      "@google-cloud/pubsub": "^3.7.1",
+      "cors": "^2.8.5",
+      "dotenv": "^16.0.3",
+      "express": "^4.18.2",
+      "express-rate-limit": "^6.7.0",
+      "helmet": "^6.1.5",
+      "morgan": "^1.10.0"
+    },
+    "engines": {
+      "node": ">=14.0.0"
+    }
+  }
